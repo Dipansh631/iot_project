@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vehicle Detection AI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="background-animation"></div>
+    <main class="container">
+        <header>
+            <h1><span class="neon-text">Auto</span>Track AI</h1>
+            <p>Next-gen Computer Vision Vehicle Detection.</p>
+        </header>
+
+        <section class="upload-card glass">
+            <h2>Upload Traffic Footage</h2>
+            <form action="/upload" method="post" enctype="multipart/form-data" class="upload-form">
+                <div class="file-drop-area" id="file-drop-area">
+                    <span class="choose-file-button">Choose files</span>
+                    <span class="file-message">or drag and drop a video here</span>
+                    <input class="file-input" type="file" name="video" accept="video/mp4,video/x-m4v,video/*" required id="file-input">
+                </div>
+                <button type="submit" class="glow-on-hover">Detect Vehicles</button>
+            </form>
+        </section>
+    </main>
+    <script>
+        const fileInput = document.getElementById('file-input');
+        const fileMessage = document.querySelector('.file-message');
+        
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length > 0) {
+                fileMessage.textContent = fileInput.files[0].name;
+            }
+        });
+    </script>
+</body>
+</html>

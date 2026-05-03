@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login — TrafficMonitor AI</title>
+  <meta name="description" content="Secure login to the Real-Time Traffic Monitoring & Number Plate Detection System">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="auth-body">
+  <div class="bg-grid"></div>
+  <div class="bg-glow glow-1"></div>
+  <div class="bg-glow glow-2"></div>
+
+  <div class="auth-wrapper">
+    <!-- Branding -->
+    <div class="auth-brand">
+      <div class="brand-icon">
+        <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="20" cy="20" r="19" stroke="url(#g1)" stroke-width="2"/>
+          <path d="M10 26 L20 10 L30 26 Z" fill="url(#g1)" opacity="0.9"/>
+          <rect x="14" y="22" width="12" height="4" rx="1" fill="white" opacity="0.3"/>
+          <defs>
+            <linearGradient id="g1" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#00f3ff"/>
+              <stop offset="1" stop-color="#9d00ff"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <h1 class="brand-name"><span class="cyan">Traffic</span>Monitor AI</h1>
+      <p class="brand-tagline">Real-Time Surveillance &amp; Plate Detection System</p>
+    </div>
+
+    <!-- Login Card -->
+    <div class="auth-card glass-card">
+      <div class="auth-card-header">
+        <h2>Secure Login</h2>
+        <p>Enter your credentials to access the monitoring dashboard</p>
+      </div>
+
+      {% if error %}
+      <div class="alert alert-error" id="login-error">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#ff4d4d" stroke-width="2"/><line x1="12" y1="8" x2="12" y2="12" stroke="#ff4d4d" stroke-width="2"/><circle cx="12" cy="16" r="1" fill="#ff4d4d"/></svg>
+        {{ error }}
+      </div>
+      {% endif %}
+
+      <form action="/login" method="post" id="login-form" class="auth-form">
+        <div class="field-group">
+          <label for="email">Email Address</label>
+          <div class="input-wrapper">
+            <svg class="input-icon" viewBox="0 0 24 24" fill="none"><rect x="2" y="4" width="20" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M2 8L12 14L22 8" stroke="currentColor" stroke-width="1.5"/></svg>
+            <input type="email" id="email" name="email" placeholder="admin@trafficmonitor.gov.in" required autocomplete="email">
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label for="password">Password</label>
+          <div class="input-wrapper">
+            <svg class="input-icon" viewBox="0 0 24 24" fill="none"><rect x="5" y="11" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M8 11V7a4 4 0 0 1 8 0v4" stroke="currentColor" stroke-width="1.5"/></svg>
+            <input type="password" id="password" name="password" placeholder="••••••••••" required autocomplete="current-password">
+            <button type="button" class="toggle-password" onclick="togglePassword()" id="toggle-btn">
+              <svg viewBox="0 0 24 24" fill="none" width="18" height="18"><path d="M1 12C3.5 6 8 3 12 3s8.5 3 11 9c-2.5 6-7 9-11 9S3.5 18 1 12z" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <button type="submit" class="btn-primary btn-full" id="login-btn">
+          <span class="btn-text">Sign In</span>
+          <div class="btn-spinner hidden" id="spinner"></div>
+        </button>
+      </form>
+
+      <div class="auth-hint">
+        <p>Demo credentials:</p>
+        <div class="credential-chips">
+          <button class="chip" onclick="fillCredentials('admin@trafficmonitor.gov.in','Admin@1234')">
+            👑 Admin
+          </button>
+          <button class="chip" onclick="fillCredentials('operator@trafficmonitor.gov.in','Operator@1234')">
+            🎯 Operator
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <p class="auth-footer">
+      Traffic Monitoring System v2.0 &nbsp;·&nbsp; Real-Time Plate Detection
+    </p>
+  </div>
+
+  <script>
+    function togglePassword() {
+      const pw = document.getElementById('password');
+      pw.type = pw.type === 'password' ? 'text' : 'password';
+    }
+
+    function fillCredentials(email, password) {
+      document.getElementById('email').value = email;
+      document.getElementById('password').value = password;
+    }
+
+    document.getElementById('login-form').addEventListener('submit', () => {
+      document.getElementById('login-btn').disabled = true;
+      document.querySelector('.btn-text').textContent = 'Authenticating…';
+    });
+  </script>
+</body>
+</html>

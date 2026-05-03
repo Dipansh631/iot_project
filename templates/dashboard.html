@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard — TrafficMonitor AI</title>
+  <meta name="description"
+    content="Real-time traffic monitoring dashboard with live plate detection and suspicious vehicle alerts">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;900&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body class="app-body">
+  <div class="bg-grid"></div>
+
+  <!-- ── Sidebar ── -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-icon-sm">
+        <svg viewBox="0 0 30 30" fill="none">
+          <circle cx="15" cy="15" r="14" stroke="url(#sg)" stroke-width="1.5" />
+          <path d="M7 20 L15 8 L23 20 Z" fill="url(#sg)" />
+          <defs>
+            <linearGradient id="sg" x1="0" y1="0" x2="30" y2="30">
+              <stop stop-color="#00f3ff" />
+              <stop offset="1" stop-color="#9d00ff" />
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <span class="sidebar-name"><span class="cyan">Traffic</span>Monitor</span>
+    </div>
+
+    <nav class="sidebar-nav">
+      <a href="/dashboard" class="nav-link active" id="nav-dashboard">
+        <svg viewBox="0 0 24 24" fill="none">
+          <rect x="3" y="3" width="7" height="7" rx="1" stroke="currentColor" stroke-width="1.5" />
+          <rect x="14" y="3" width="7" height="7" rx="1" stroke="currentColor" stroke-width="1.5" />
+          <rect x="3" y="14" width="7" height="7" rx="1" stroke="currentColor" stroke-width="1.5" />
+          <rect x="14" y="14" width="7" height="7" rx="1" stroke="currentColor" stroke-width="1.5" />
+        </svg>
+        Dashboard
+      </a>
+      <a href="/watchlist" class="nav-link" id="nav-watchlist">
+        <svg viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5" />
+          <path d="M12 8v4l3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        </svg>
+        Watchlist
+      </a>
+      <a href="/alerts" class="nav-link" id="nav-alerts">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke="currentColor" stroke-width="1.5" />
+          <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" stroke-width="1.5" />
+        </svg>
+        Alerts
+        <span class="badge-dot" id="alert-dot" style="display:none"></span>
+      </a>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="user-info">
+        <div class="user-avatar">{{ (user.full_name[0] if user.full_name else user.email[0]) if user else '?' }}</div>
+        <div class="user-meta">
+          <span class="user-name">{{ user.full_name or user.email }}</span>
+          <span class="user-role role-{{ user.role }}">{{ user.role }}</span>
+        </div>
+      </div>
+      <a href="/logout" class="logout-btn" title="Logout">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" stroke="currentColor" stroke-width="1.5" />
+          <polyline points="16,17 21,12 16,7" stroke="currentColor" stroke-width="1.5" />
+          <line x1="21" y1="12" x2="9" y2="12" stroke="currentColor" stroke-width="1.5" />
+        </svg>
+      </a>
+    </div>
+  </aside>
+
+  <!-- ── Main ── -->
+  <main class="app-main">
+    <!-- Top bar -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <button class="menu-btn" onclick="toggleSidebar()" id="menu-btn">
+          <svg viewBox="0 0 24 24" fill="none" width="20" height="20">
+            <line x1="3" y1="6" x2="21" y2="6" stroke="currentColor" stroke-width="2" />
+            <line x1="3" y1="12" x2="21" y2="12" stroke="currentColor" stroke-width="2" />
+            <line x1="3" y1="18" x2="21" y2="18" stroke="currentColor" stroke-width="2" />
+          </svg>
+        </button>
+        <div class="page-title">
+          <h1>Command Dashboard</h1>
+          <span class="live-badge"><span class="pulse-dot"></span>SYSTEM ONLINE</span>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <div class="stat-chip">
+          <span class="stat-label">Today's Scans</span>
+          <span class="stat-val cyan" id="top-detections">{{ total_detections }}</span>
+        </div>
+        <div class="stat-chip alert-chip" id="top-alert-chip">
+          <span class="stat-label">Suspicious</span>
+          <span class="stat-val red" id="top-suspicious">{{ total_suspicious }}</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Alert Banner -->
+    <div class="alert-banner hidden" id="alert-banner">
+      <div class="alert-banner-icon">🚨</div>
+      <div class="alert-banner-text">
+        <strong id="alert-title">ALERT</strong>
+        <span id="alert-body">Suspicious vehicle detected!</span>
+      </div>
+      <button onclick="dismissAlert()" class="alert-close">✕</button>
+    </div>
+
+    <div class="content-area">
+      <!-- ── Stats Cards ── -->
+      <section class="stats-grid">
+        <div class="stat-card glass-card">
+          <div class="stat-card-icon cyan-bg">
+            <svg viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="white" stroke-width="1.5" />
+              <path d="M12 6v6l4 2" stroke="white" stroke-width="1.5" stroke-linecap="round" />
+            </svg>
+          </div>
+          <div class="stat-card-info">
+            <span class="stat-card-num cyan" id="stat-total">{{ total_detections }}</span>
+            <span class="stat-card-label">Total Detections</span>
+          </div>
+          <div class="stat-card-trend up">↑ Active</div>
+        </div>
+        <div class="stat-card glass-card">
+          <div class="stat-card-icon red-bg">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="M12 2L2 20h20L12 2z" stroke="white" stroke-width="1.5" />
+              <line x1="12" y1="10" x2="12" y2="14" stroke="white" stroke-width="1.5" />
+              <circle cx="12" cy="17" r="1" fill="white" />
+            </svg>
+          </div>
+          <div class="stat-card-info">
+            <span class="stat-card-num red" id="stat-suspicious">{{ total_suspicious }}</span>
+            <span class="stat-card-label">Suspicious Detected</span>
+          </div>
+          <div class="stat-card-trend danger">⚠ Alert</div>
+        </div>
+        <div class="stat-card glass-card">
+          <div class="stat-card-icon purple-bg">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke="white" stroke-width="1.5" />
+              <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="white" stroke-width="1.5" />
+            </svg>
+          </div>
+          <div class="stat-card-info">
+            <span class="stat-card-num purple" id="stat-alerts">{{ total_alerts }}</span>
+            <span class="stat-card-label">Alerts Sent</span>
+          </div>
+          <div class="stat-card-trend">📡 Police</div>
+        </div>
+        <div class="stat-card glass-card">
+          <div class="stat-card-icon amber-bg">
+            <svg viewBox="0 0 24 24" fill="none">
+              <rect x="2" y="7" width="20" height="14" rx="2" stroke="white" stroke-width="1.5" />
+              <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2" stroke="white" stroke-width="1.5" />
+            </svg>
+          </div>
+          <div class="stat-card-info">
+            <span class="stat-card-num amber">{{ total_vehicles }}</span>
+            <span class="stat-card-label">Watchlist Vehicles</span>
+          </div>
+          <div class="stat-card-trend">🔍 Active</div>
+        </div>
+      </section>
+
+      <!-- ── Mode Selection ── -->
+      <section class="mode-section glass-card">
+        <div class="section-header">
+          <h2>Start Monitoring</h2>
+          <p>Upload a video file or activate the live camera feed</p>
+        </div>
+        <div class="mode-grid">
+          <!-- Upload Video -->
+          <div class="mode-card" id="mode-upload-card">
+            <div class="mode-icon">
+              <svg viewBox="0 0 24 24" fill="none">
+                <rect x="2" y="2" width="20" height="20" rx="3" stroke="url(#mg1)" stroke-width="1.5" />
+                <path d="M8 12l4-4 4 4" stroke="url(#mg1)" stroke-width="1.5" stroke-linecap="round" />
+                <line x1="12" y1="8" x2="12" y2="16" stroke="url(#mg1)" stroke-width="1.5" />
+                <defs>
+                  <linearGradient id="mg1" x1="0" y1="0" x2="24" y2="24">
+                    <stop stop-color="#00f3ff" />
+                    <stop offset="1" stop-color="#9d00ff" />
+                  </linearGradient>
+                </defs>
+              </svg>
+            </div>
+            <h3>Upload Video</h3>
+            <p>Process a pre-recorded traffic video file</p>
+            <form action="/upload" method="post" enctype="multipart/form-data" id="upload-form">
+              <label class="file-zone" id="file-zone">
+                <input type="file" name="video" accept="video/*" required id="file-input" class="hidden">
+                <div class="file-zone-inner" id="file-inner">
+                  <svg viewBox="0 0 24 24" fill="none" width="32" height="32">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="currentColor" stroke-width="1.5" />
+                    <polyline points="17,8 12,3 7,8" stroke="currentColor" stroke-width="1.5" />
+                    <line x1="12" y1="3" x2="12" y2="15" stroke="currentColor" stroke-width="1.5" />
+                  </svg>
+                  <span id="file-label">Drop video here or click to browse</span>
+                  <span class="file-hint">MP4, AVI, MOV supported</span>
+                </div>
+              </label>
+              <button type="submit" class="btn-primary btn-full" id="upload-btn">
+                <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
+                  <polygon points="5,3 19,12 5,21" fill="currentColor" />
+                </svg>
+                Start Detection
+              </button>
+            </form>
+          </div>
+
+          <!-- Live Camera -->
+          <div class="mode-card" id="mode-live-card">
+            <div class="mode-icon">
+              <svg viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="9" stroke="url(#mg2)" stroke-width="1.5" />
+                <circle cx="12" cy="12" r="3" fill="url(#mg2)" />
+                <defs>
+                  <linearGradient id="mg2" x1="0" y1="0" x2="24" y2="24">
+                    <stop stop-color="#ff4444" />
+                    <stop offset="1" stop-color="#ff9900" />
+                  </linearGradient>
+                </defs>
+              </svg>
+            </div>
+            <h3>Live Camera</h3>
+            <p>Monitor real-time traffic via connected webcam</p>
+            <div class="camera-status" id="camera-status">
+              <div class="cam-indicator off" id="cam-indicator"></div>
+              <span id="cam-status-text">Camera Ready</span>
+            </div>
+            <a href="/live" class="btn-danger btn-full" id="live-btn">
+              <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
+                <circle cx="12" cy="12" r="3" fill="white" />
+                <circle cx="12" cy="12" r="7" stroke="white" stroke-width="1.5" opacity="0.5" />
+                <circle cx="12" cy="12" r="11" stroke="white" stroke-width="1" opacity="0.2" />
+              </svg>
+              Go Live
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Recent Detections + Alerts ── -->
+      <div class="data-grid">
+        <!-- Detections Table -->
+        <section class="data-card glass-card">
+          <div class="section-header">
+            <h2>Recent Detections</h2>
+            <button class="refresh-btn" onclick="refreshDetections()" title="Refresh">
+              <svg viewBox="0 0 24 24" fill="none" width="16">
+                <path d="M23 4v6h-6" stroke="currentColor" stroke-width="1.5" />
+                <path d="M1 20v-6h6" stroke="currentColor" stroke-width="1.5" />
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" stroke="currentColor"
+                  stroke-width="1.5" />
+              </svg>
+            </button>
+          </div>
+          <div class="table-wrapper">
+            <table class="data-table" id="detections-table">
+              <thead>
+                <tr>
+                  <th>Plate</th>
+                  <th>Confidence</th>
+                  <th>Status</th>
+                  <th>Time</th>
+                  <th>Image</th>
+                </tr>
+              </thead>
+              <tbody id="detections-body">
+                {% for d in recent_detections %}
+                <tr class="{{ 'row-danger' if d.is_suspicious else '' }}">
+                  <td class="plate-cell">
+                    <span class="plate-badge {{ 'plate-danger' if d.is_suspicious else 'plate-normal' }}">{{
+                      d.detected_plate }}</span>
+                  </td>
+                  <td>
+                    <div class="conf-bar-wrap">
+                      <div class="conf-bar" data-width="{{ d.confidence_score|default(0)|int }}%"></div>
+                      <span>{{ d.confidence_score|default(0)|int }}%</span>
+                    </div>
+                  </td>
+                  <td>
+                    {% if d.is_suspicious %}
+                    <span class="badge badge-danger">⚠ SUSPICIOUS</span>
+                    {% else %}
+                    <span class="badge badge-ok">✓ Clear</span>
+                    {% endif %}
+                  </td>
+                  <td class="time-cell">
+                    {% if d.detection_timestamp is string %}
+                    {{ d.detection_timestamp[:19] }}
+                    {% elif d.detection_timestamp %}
+                    {{ d.detection_timestamp.strftime('%H:%M:%S') }}
+                    {% else %}
+                    —
+                    {% endif %}
+                  </td>
+                  <td>
+                    {% if d.image_filename %}
+                    <a href="/static/captures/{{ d.image_filename }}" target="_blank" class="img-link">View</a>
+                    {% else %}—{% endif %}
+                  </td>
+                </tr>
+                {% else %}
+                <tr>
+                  <td colspan="5" class="empty-row">No detections yet. Upload a video or start live monitoring.</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- Alerts Panel -->
+        <section class="data-card glass-card">
+          <div class="section-header">
+            <h2>Police Alerts</h2>
+            <span class="section-badge">Last 10</span>
+          </div>
+          <div class="alerts-list" id="alerts-list">
+            {% for a in recent_alerts %}
+            <div class="alert-item severity-{{ a.severity_level }}">
+              <div class="alert-item-header">
+                <span class="alert-plate">{{ a.license_plate }}</span>
+                <span class="severity-badge severity-{{ a.severity_level or 'medium' }}">{{ (a.severity_level or
+                  'medium').upper() }}</span>
+              </div>
+              <div class="alert-item-body">
+                <span class="alert-station">📡 {{ a.station_name }}</span>
+                <span class="alert-time">
+                  {% if a.created_at is string %}
+                  {{ a.created_at[:16] }}
+                  {% elif a.created_at %}
+                  {{ a.created_at.strftime('%H:%M') }}
+                  {% else %}
+                  —
+                  {% endif %}
+                </span>
+              </div>
+            </div>
+            {% else %}
+            <div class="empty-alerts">No alerts yet. Suspicious detections will appear here.</div>
+            {% endfor %}
+          </div>
+        </section>
+      </div>
+
+      <!-- ── Police Stations ── -->
+      <section class="stations-section glass-card">
+        <div class="section-header">
+          <h2>Linked Police Stations</h2>
+          <span class="section-badge">{{ stations|length }} Active</span>
+        </div>
+        <div class="stations-grid">
+          {% for s in stations %}
+          <div class="station-card">
+            <div class="station-icon">🏛</div>
+            <div class="station-info">
+              <span class="station-name">{{ s.station_name }}</span>
+              <span class="station-loc">{{ s.city }}, {{ s.state }}</span>
+              <span class="station-code">{{ s.station_code }}</span>
+            </div>
+            <div class="station-status online">Online</div>
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+    </div><!-- /content-area -->
+  </main>
+
+  <!-- ── Alert Toast ── -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script>
+    // ── WebSocket for live alerts ─────────────────────────────────────────────
+    const ws = new WebSocket(`ws://${location.host}/ws/alerts`);
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'alert') {
+        showAlertBanner(data);
+        showToast(data);
+        refreshDetections();
+        refreshStats();
+        document.getElementById('alert-dot').style.display = 'inline-block';
+      }
+    };
+
+    ws.onerror = () => console.warn('WebSocket not available — polling mode.');
+
+    // Apply initial widths
+    document.addEventListener('DOMContentLoaded', () => {
+      document.querySelectorAll('.conf-bar[data-width]').forEach(bar => {
+        bar.style.width = bar.getAttribute('data-width');
+      });
+    });
+
+    // ── Refresh functions ─────────────────────────────────────────────────────
+    async function refreshDetections() {
+      try {
+        const res = await fetch('/api/detections?limit=20');
+        const data = await res.json();
+        const tbody = document.getElementById('detections-body');
+        tbody.innerHTML = data.length ? data.map(d => `
+          <tr class="${d.is_suspicious ? 'row-danger' : ''}">
+            <td class="plate-cell">
+              <span class="plate-badge ${d.is_suspicious ? 'plate-danger' : 'plate-normal'}">${d.plate}</span>
+            </td>
+            <td>
+              <div class="conf-bar-wrap">
+                <div class="conf-bar" style="width: ${d.confidence || 0}%"></div>
+                <span>${d.confidence || 0}%</span>
+              </div>
+            </td>
+            <td>${d.is_suspicious ? '<span class="badge badge-danger">⚠ SUSPICIOUS</span>' : '<span class="badge badge-ok">✓ Clear</span>'}</td>
+            <td class="time-cell">${new Date(d.timestamp).toLocaleTimeString()}</td>
+            <td>${d.image ? `<a href="${d.image}" target="_blank" class="img-link">View</a>` : '—'}</td>
+          </tr>
+        `).join('') : '<tr><td colspan="5" class="empty-row">No detections yet.</td></tr>';
+      } catch (e) { }
+    }
+
+    async function refreshStats() {
+      try {
+        const res = await fetch('/api/stats');
+        const s = await res.json();
+        document.getElementById('stat-total').textContent = s.total_detections;
+        document.getElementById('stat-suspicious').textContent = s.suspicious_detections;
+        document.getElementById('stat-alerts').textContent = s.total_alerts;
+        document.getElementById('top-detections').textContent = s.total_detections;
+        document.getElementById('top-suspicious').textContent = s.suspicious_detections;
+      } catch (e) { }
+    }
+
+    // Auto-refresh every 10s
+    setInterval(() => { refreshDetections(); refreshStats(); }, 10000);
+
+    // ── Alert Banner ──────────────────────────────────────────────────────────
+    function showAlertBanner(data) {
+      const banner = document.getElementById('alert-banner');
+      document.getElementById('alert-title').textContent = `🚨 SUSPICIOUS PLATE: ${data.plate}`;
+      document.getElementById('alert-body').textContent = `${data.reason || ''} — Severity: ${data.severity?.toUpperCase()}`;
+      banner.classList.remove('hidden');
+      banner.classList.add('animate-in');
+    }
+
+    function dismissAlert() {
+      document.getElementById('alert-banner').classList.add('hidden');
+    }
+
+    // ── Toast Notifications ───────────────────────────────────────────────────
+    function showToast(data) {
+      const tc = document.getElementById('toast-container');
+      const toast = document.createElement('div');
+      toast.className = `toast toast-danger`;
+      toast.innerHTML = `
+        <div class="toast-icon">🚨</div>
+        <div class="toast-body">
+          <strong>${data.plate}</strong>
+          <span>${data.reason || 'Suspicious vehicle'}</span>
+        </div>
+        <button onclick="this.parentElement.remove()">✕</button>
+      `;
+      tc.prepend(toast);
+      setTimeout(() => toast.remove(), 8000);
+    }
+
+    // ── Sidebar toggle ────────────────────────────────────────────────────────
+    function toggleSidebar() {
+      document.getElementById('sidebar').classList.toggle('sidebar-open');
+    }
+
+    // ── File upload UX ────────────────────────────────────────────────────────
+    const fileInput = document.getElementById('file-input');
+    const fileZone = document.getElementById('file-zone');
+    const fileLabel = document.getElementById('file-label');
+
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files.length > 0) {
+        fileLabel.textContent = fileInput.files[0].name;
+        fileZone.classList.add('has-file');
+      }
+    });
+
+    ['dragover', 'dragenter'].forEach(e => fileZone.addEventListener(e, ev => { ev.preventDefault(); fileZone.classList.add('drag-over'); }));
+    ['dragleave', 'drop'].forEach(e => fileZone.addEventListener(e, () => fileZone.classList.remove('drag-over')));
+    fileZone.addEventListener('drop', ev => {
+      ev.preventDefault();
+      const files = ev.dataTransfer.files;
+      if (files.length) { fileInput.files = files; fileLabel.textContent = files[0].name; fileZone.classList.add('has-file'); }
+    });
+
+    document.getElementById('upload-form').addEventListener('submit', () => {
+      document.getElementById('upload-btn').innerHTML = '<div class="btn-spinner"></div> Processing…';
+    });
+  </script>
+</body>
+
+</html>

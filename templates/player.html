@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live Processing — TrafficMonitor AI</title>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="app-body">
+  <div class="bg-grid"></div>
+
+  <!-- Sidebar (same as dashboard) -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-icon-sm">
+        <svg viewBox="0 0 30 30" fill="none"><circle cx="15" cy="15" r="14" stroke="url(#sg2)" stroke-width="1.5"/><path d="M7 20 L15 8 L23 20 Z" fill="url(#sg2)"/><defs><linearGradient id="sg2" x1="0" y1="0" x2="30" y2="30"><stop stop-color="#00f3ff"/><stop offset="1" stop-color="#9d00ff"/></linearGradient></defs></svg>
+      </div>
+      <span class="sidebar-name"><span class="cyan">Traffic</span>Monitor</span>
+    </div>
+    <nav class="sidebar-nav">
+      <a href="/dashboard" class="nav-link" id="nav-dashboard">
+        <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="7" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="14" y="3" width="7" height="7" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="3" y="14" width="7" height="7" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="14" y="14" width="7" height="7" rx="1" stroke="currentColor" stroke-width="1.5"/></svg>
+        Dashboard
+      </a>
+      <a href="/watchlist" class="nav-link">
+        <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/><path d="M12 8v4l3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        Watchlist
+      </a>
+      <a href="/alerts" class="nav-link">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke="currentColor" stroke-width="1.5"/><path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" stroke-width="1.5"/></svg>
+        Alerts
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="user-info">
+        <div class="user-avatar">{{ user.full_name[0] if user.full_name else user.email[0] }}</div>
+        <div class="user-meta">
+          <span class="user-name">{{ user.full_name or user.email }}</span>
+          <span class="user-role role-{{ user.role }}">{{ user.role }}</span>
+        </div>
+      </div>
+      <a href="/logout" class="logout-btn">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" stroke="currentColor" stroke-width="1.5"/><polyline points="16,17 21,12 16,7" stroke="currentColor" stroke-width="1.5"/><line x1="21" y1="12" x2="9" y2="12" stroke="currentColor" stroke-width="1.5"/></svg>
+      </a>
+    </div>
+  </aside>
+
+  <main class="app-main">
+    <header class="topbar">
+      <div class="topbar-left">
+        <button class="menu-btn" onclick="document.getElementById('sidebar').classList.toggle('sidebar-open')">
+          <svg viewBox="0 0 24 24" fill="none" width="20" height="20"><line x1="3" y1="6" x2="21" y2="6" stroke="currentColor" stroke-width="2"/><line x1="3" y1="12" x2="21" y2="12" stroke="currentColor" stroke-width="2"/><line x1="3" y1="18" x2="21" y2="18" stroke="currentColor" stroke-width="2"/></svg>
+        </button>
+        <div class="page-title">
+          <h1>
+            {% if mode == 'live' %}
+              <span class="live-badge-text"><span class="pulse-dot red"></span>LIVE</span> Camera Feed
+            {% else %}
+              Video Processing
+            {% endif %}
+          </h1>
+        </div>
+      </div>
+      <div class="topbar-right">
+        {% if mode == 'live' %}
+        <button onclick="stopLive()" class="btn-outline-danger" id="stop-btn">⏹ Stop Live</button>
+        {% endif %}
+        <a href="/dashboard" class="btn-outline">← Dashboard</a>
+      </div>
+    </header>
+
+    <!-- Alert Banner -->
+    <div class="alert-banner hidden" id="alert-banner">
+      <div class="alert-banner-icon">🚨</div>
+      <div class="alert-banner-text">
+        <strong id="alert-title">ALERT</strong>
+        <span id="alert-body">Suspicious vehicle detected!</span>
+      </div>
+      <button onclick="this.parentElement.classList.add('hidden')" class="alert-close">✕</button>
+    </div>
+
+    <div class="content-area">
+      <div class="player-layout">
+        <!-- Video Stream -->
+        <div class="player-main">
+          <div class="stream-wrapper glass-card">
+            <div class="stream-header">
+              <div class="stream-title">
+                {% if mode == 'live' %}
+                <span class="stream-type-badge live">🔴 LIVE FEED</span>
+                {% else %}
+                <span class="stream-type-badge upload">📹 VIDEO ANALYSIS</span>
+                {% endif %}
+                <span class="stream-location">Session #{{ session_id }}</span>
+              </div>
+              <div class="stream-stats">
+                <span id="frame-count">Frames: —</span>
+                <span id="detect-count">Detected: 0</span>
+              </div>
+            </div>
+
+            <div class="stream-container">
+              <div class="scan-line"></div>
+              {% if mode == 'live' %}
+              <img src="/live_feed?session_id={{ session_id }}" alt="Live Camera Feed"
+                   class="video-stream" id="stream-img"
+                   onerror="handleStreamError()">
+              {% else %}
+              <img src="/video_feed?session_id={{ session_id }}" alt="Video Analysis Stream"
+                   class="video-stream" id="stream-img"
+                   onload="streamLoaded()" onerror="handleStreamError()">
+              {% endif %}
+              <div class="stream-overlay" id="stream-overlay">
+                <div class="overlay-icon">📹</div>
+                <span>Initialising stream…</span>
+              </div>
+            </div>
+
+            <div class="stream-footer">
+              <div class="hud-item"><span class="hud-label">STATUS</span><span class="hud-val cyan" id="hud-status">ACTIVE</span></div>
+              <div class="hud-item"><span class="hud-label">OCR ENGINE</span><span class="hud-val">Gemini 2.0</span></div>
+              <div class="hud-item"><span class="hud-label">DETECTOR</span><span class="hud-val">YOLOv8</span></div>
+              <div class="hud-item"><span class="hud-label">PLATES</span><span class="hud-val cyan" id="hud-plates">0</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Side Panel -->
+        <div class="player-side">
+          <!-- Live Detections -->
+          <div class="side-card glass-card" id="live-detections-card">
+            <div class="side-card-header">
+              <h3>Live Detections</h3>
+              <div class="pulse-dot cyan"></div>
+            </div>
+            <div class="live-detections-list" id="live-detections">
+              <div class="empty-detection">Waiting for detections…</div>
+            </div>
+          </div>
+
+          <!-- Plate Lookup -->
+          <div class="side-card glass-card">
+            <div class="side-card-header">
+              <h3>Manual Plate Lookup</h3>
+            </div>
+            <div class="lookup-form">
+              <input type="text" id="lookup-input" placeholder="Enter plate e.g. MH12AB1234"
+                     class="lookup-input" onkeydown="if(event.key==='Enter') lookupPlate()">
+              <button onclick="lookupPlate()" class="btn-primary btn-sm">Check</button>
+            </div>
+            <div id="lookup-result" class="lookup-result hidden"></div>
+          </div>
+
+          <!-- Suspicious Watchlist -->
+          <div class="side-card glass-card">
+            <div class="side-card-header">
+              <h3>Active Watchlist</h3>
+              <span class="section-badge" id="wl-count">—</span>
+            </div>
+            <div class="watchlist-mini" id="watchlist-mini">Loading…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div class="toast-container" id="toast-container"></div>
+
+  <script>
+    const streamMode = "{{ mode }}";
+    let detectionCount = 0;
+
+    // ── WebSocket ─────────────────────────────────────────────────────────────
+    const ws = new WebSocket(`ws://${location.host}/ws/alerts`);
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'alert') {
+        addLiveDetection(data, true);
+        showAlertBanner(data);
+        showToast(data);
+        document.getElementById('hud-plates').textContent = ++detectionCount;
+      }
+    };
+
+    // ── Stream error handling ─────────────────────────────────────────────────
+    function streamLoaded() {
+      document.getElementById('stream-overlay').style.display = 'none';
+    }
+
+    function handleStreamError() {
+      document.getElementById('stream-overlay').innerHTML = `
+        <div class="overlay-icon">⚠</div>
+        <span>Stream ended or camera unavailable.</span>
+        <a href="/dashboard" class="btn-outline" style="margin-top:1rem">← Back</a>
+      `;
+    }
+    setTimeout(() => {
+      const overlay = document.getElementById('stream-overlay');
+      if (overlay) overlay.style.display = 'none';
+    }, 3000);
+
+    // ── Live detection feed ───────────────────────────────────────────────────
+    function addLiveDetection(data, isSuspicious) {
+      const list = document.getElementById('live-detections');
+      const empty = list.querySelector('.empty-detection');
+      if (empty) empty.remove();
+
+      const item = document.createElement('div');
+      item.className = `live-det-item ${isSuspicious ? 'det-danger' : 'det-ok'}`;
+      item.innerHTML = `
+        <span class="live-det-plate ${isSuspicious ? 'plate-danger' : 'plate-normal'}">${data.plate}</span>
+        <div class="live-det-meta">
+          <span>${isSuspicious ? '⚠ SUSPICIOUS' : '✓ Clear'}</span>
+          <span>${new Date().toLocaleTimeString()}</span>
+        </div>
+        ${isSuspicious ? `<div class="live-det-reason">${data.reason || ''}</div>` : ''}
+      `;
+      list.prepend(item);
+      // Keep only last 20
+      while (list.children.length > 20) list.lastChild.remove();
+    }
+
+    // Poll detections every 5s for upload mode
+    if (streamMode === 'upload') {
+      setInterval(async () => {
+        try {
+          const res = await fetch('/api/detections?limit=5');
+          const data = await res.json();
+          data.forEach(d => addLiveDetection({plate: d.plate, reason: ''}, d.is_suspicious));
+          document.getElementById('hud-plates').textContent = data.length;
+        } catch(e) {}
+      }, 5000);
+    }
+
+    // ── Plate Lookup ──────────────────────────────────────────────────────────
+    async function lookupPlate() {
+      const plate = document.getElementById('lookup-input').value.trim().toUpperCase();
+      if (!plate) return;
+
+      const res = document.getElementById('lookup-result');
+      res.classList.remove('hidden');
+      res.innerHTML = '<div class="loading-dots">Checking database<span>...</span></div>';
+
+      try {
+        const r = await fetch('/api/suspicious_vehicles');
+        const vehicles = await r.json();
+        const match = vehicles.find(v => v.plate === plate);
+
+        if (match) {
+          res.innerHTML = `
+            <div class="lookup-match danger">
+              <div class="lm-header">⚠ SUSPICIOUS VEHICLE FOUND</div>
+              <div class="lm-row"><b>Plate:</b> ${match.plate}</div>
+              <div class="lm-row"><b>Type:</b> ${match.type || '—'} | <b>Color:</b> ${match.color || '—'}</div>
+              <div class="lm-row"><b>Reason:</b> ${match.reason}</div>
+              <div class="lm-row"><b>Severity:</b> <span class="severity-badge severity-${match.severity}">${match.severity?.toUpperCase()}</span></div>
+              <div class="lm-row"><b>Reported by:</b> ${match.reported_by || '—'}</div>
+            </div>`;
+        } else {
+          res.innerHTML = `<div class="lookup-match ok"><span class="badge badge-ok">✓ CLEAR</span> No record found for <b>${plate}</b></div>`;
+        }
+      } catch(e) {
+        res.innerHTML = `<div class="lookup-match warn">Could not connect to database.</div>`;
+      }
+    }
+
+    // ── Load watchlist ────────────────────────────────────────────────────────
+    async function loadWatchlist() {
+      try {
+        const r = await fetch('/api/suspicious_vehicles');
+        const data = await r.json();
+        document.getElementById('wl-count').textContent = data.length;
+        const mini = document.getElementById('watchlist-mini');
+        mini.innerHTML = data.slice(0, 6).map(v => `
+          <div class="wl-mini-item severity-${v.severity}">
+            <span class="plate-badge plate-danger">${v.plate}</span>
+            <span class="severity-badge severity-${v.severity}">${v.severity?.toUpperCase()}</span>
+          </div>
+        `).join('');
+      } catch(e) {}
+    }
+    loadWatchlist();
+
+    // ── Stop live feed ────────────────────────────────────────────────────────
+    async function stopLive() {
+      await fetch('/stop_live', { method: 'POST' });
+      document.getElementById('hud-status').textContent = 'STOPPED';
+      document.getElementById('hud-status').style.color = '#ff4444';
+      document.getElementById('stop-btn').disabled = true;
+      handleStreamError();
+    }
+
+    // ── Alert Banner ──────────────────────────────────────────────────────────
+    function showAlertBanner(data) {
+      const banner = document.getElementById('alert-banner');
+      document.getElementById('alert-title').textContent = `🚨 SUSPICIOUS: ${data.plate}`;
+      document.getElementById('alert-body').textContent = data.reason || '';
+      banner.classList.remove('hidden');
+    }
+
+    function showToast(data) {
+      const tc = document.getElementById('toast-container');
+      const t = document.createElement('div');
+      t.className = 'toast toast-danger';
+      t.innerHTML = `<div class="toast-icon">🚨</div><div class="toast-body"><strong>${data.plate}</strong><span>${data.reason||''}</span></div><button onclick="this.parentElement.remove()">✕</button>`;
+      tc.prepend(t);
+      setTimeout(() => t.remove(), 8000);
+    }
+  </script>
+</body>
+</html>
