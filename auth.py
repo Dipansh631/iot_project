@@ -96,3 +96,9 @@ async def require_admin(current_user: User = Depends(require_user)) -> User:
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
+
+
+async def require_police(current_user: User = Depends(require_user)) -> User:
+    if current_user.role != "police":
+        raise HTTPException(status_code=403, detail="Police access required")
+    return current_user

@@ -4,11 +4,11 @@ Uses YOLOv8 for vehicle detection and EasyOCR for plate text extraction.
 Falls back gracefully if models are not available.
 """
 import cv2
+import json
 import re
 import os
 import numpy as np
 import logging
-import pdf_extractor
 import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
@@ -18,12 +18,52 @@ _yolo_model = None
 _ocr_reader  = None
 
 # ── Gemini Setup ──────────────────────────────────────────────────────────────
-_GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+_GEMINI_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 _gemini_model = None
 
 if _GEMINI_KEY:
     genai.configure(api_key=_GEMINI_KEY)
-    _gemini_model = genai.GenerativeModel('gemini-2.0-flash')
+    _gemini_model = genai.GenerativeModel(os.getenv("GEMINI_MODEL_PLATE", "gemini-2.0-flash"))
+
+
+# ── Plate validation ─────────────────────────────────────────────────────────
+
+_EXCLUDE_WORDS = [
+    "TOYOTA", "HONDA", "SUZUKI", "HYUNDAI", "TATA", "MAHINDRA", "BMW", "AUDI", "FORD", "KIA", "MARUTI",
+    "STORYBLOCKS", "STORY", "BLOCKS", "ADOBE", "STOCK", "GETTY", "SHUTTERSTOCK", "PREMIUM",
+]
+
+
+def is_plausible_plate(text: str) -> bool:
+    """Generic plate plausibility check.
+
+    This is intentionally stricter than "any alnum" but looser than Indian-only rules,
+    so short watchlist plates like "GYP274" can pass without letting watermark noise through.
+    """
+    if not text:
+        return False
+    if not re.fullmatch(r"[A-Z0-9]+", text):
+        return False
+    if not (5 <= len(text) <= 12):
+        return False
+    for word in _EXCLUDE_WORDS:
+        if word in text:
+            return False
+
+    letters = len(re.findall(r"[A-Z]", text))
+    digits = len(re.findall(r"[0-9]", text))
+
+    # Must contain both letters and digits.
+    if letters == 0 or digits == 0:
+        return False
+    # Avoid very letter-heavy strings that are rarely plates.
+    if letters >= 9 and digits <= 1:
+        return False
+    # For short strings, require at least 2 digits to cut down false positives.
+    if len(text) <= 6 and digits < 2:
+        return False
+
+    return True
 
 
 def _get_yolo():
@@ -75,32 +115,230 @@ def clean_plate(raw_text: str) -> str:
     return cleaned
 
 
+def plate_match_keys(raw_text: str) -> set[str]:
+    """Return a set of normalized plate keys for matching.
+
+    Used to match OCR outputs against watchlist entries even when there are:
+    - spaces/hyphens
+    - common OCR confusions (O/0, I/1, Z/2, S/5, B/8)
+    """
+    cleaned = clean_plate(raw_text or "")
+    if not cleaned:
+        return set()
+
+    keys: set[str] = {cleaned}
+    swaps = [
+        ("O", "0"), ("0", "O"),
+        ("I", "1"), ("1", "I"),
+        ("Z", "2"), ("2", "Z"),
+        ("S", "5"), ("5", "S"),
+        ("B", "8"), ("8", "B"),
+    ]
+    for a, b in swaps:
+        keys.add(cleaned.replace(a, b))
+
+    # Best-effort: normalize first two chars as letters for Indian plates.
+    if len(cleaned) >= 2:
+        state_map = str.maketrans({"0": "O", "1": "I", "2": "Z", "5": "S", "8": "B"})
+        keys.add(cleaned[:2].translate(state_map) + cleaned[2:])
+
+    return {k for k in keys if k}
+
+
+def _normalize_plate_candidate(text: str) -> str:
+    """Try common OCR confusion fixes and return a validated plate, else '' ."""
+    cleaned = clean_plate(text)
+    if not cleaned:
+        return ""
+    if is_valid_plate(cleaned):
+        return cleaned
+
+    variants: list[str] = []
+    variants.append(cleaned.replace("O", "0"))
+    variants.append(cleaned.replace("I", "1"))
+    variants.append(cleaned.replace("Z", "2"))
+    variants.append(cleaned.replace("S", "5"))
+    variants.append(cleaned.replace("B", "8"))
+
+    # Also fix state code characters that got OCR'd as digits.
+    if len(cleaned) >= 2:
+        state_map = str.maketrans({"0": "O", "1": "I", "2": "Z", "5": "S", "8": "B"})
+        variants.append(cleaned[:2].translate(state_map) + cleaned[2:])
+
+    for v in variants:
+        if v and is_valid_plate(v):
+            return v
+
+    # Allow a stricter generic format for non-Indian watchlist plates.
+    allow_generic = os.getenv("PLATE_ALLOW_GENERIC", "1").strip() not in ("0", "false", "False", "no", "NO")
+    if allow_generic:
+        if is_plausible_plate(cleaned):
+            return cleaned
+        for v in variants:
+            if v and is_plausible_plate(v):
+                return v
+
+    return ""
+
+
+def _plate_candidates_from_easyocr(reader, image: np.ndarray) -> list[tuple[str, float]]:
+    """Return list of (plate, confidence) candidates."""
+    try:
+        results = reader.readtext(image)
+    except Exception as exc:
+        logger.debug(f"EasyOCR error: {exc}")
+        return []
+
+    out: list[tuple[str, float]] = []
+    for (bbox, raw_text, conf) in results:
+        plate = _normalize_plate_candidate(raw_text)
+        if plate:
+            out.append((plate, float(conf)))
+        else:
+            cleaned = clean_plate(raw_text)
+            if cleaned:
+                logger.debug(f"Filter rejected OCR text: {cleaned}")
+    return out
+
+
+def _find_plate_crops(bgr_region: np.ndarray) -> list[np.ndarray]:
+    """Find likely plate crops within a region using contour heuristics."""
+    if bgr_region is None or bgr_region.size == 0:
+        return []
+
+    gray = cv2.cvtColor(bgr_region, cv2.COLOR_BGR2GRAY)
+    gray = cv2.bilateralFilter(gray, 9, 75, 75)
+    edges = cv2.Canny(gray, 80, 200)
+    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
+
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return []
+
+    h, w = gray.shape[:2]
+    area_min = max(500, int(0.01 * w * h))
+
+    rects: list[tuple[int, int, int, int, float]] = []
+    for cnt in contours:
+        x, y, rw, rh = cv2.boundingRect(cnt)
+        area = rw * rh
+        if area < area_min:
+            continue
+        if rh == 0:
+            continue
+        aspect = rw / float(rh)
+        # Typical plate aspect ratio ~ 2-6
+        if not (2.0 <= aspect <= 6.5):
+            continue
+        if rw < 60 or rh < 15:
+            continue
+        rects.append((x, y, rw, rh, area))
+
+    rects.sort(key=lambda r: r[4], reverse=True)
+    crops: list[np.ndarray] = []
+    for (x, y, rw, rh, area) in rects[:3]:
+        pad_x = int(rw * 0.05)
+        pad_y = int(rh * 0.15)
+        x1 = max(0, x - pad_x)
+        y1 = max(0, y - pad_y)
+        x2 = min(w, x + rw + pad_x)
+        y2 = min(h, y + rh + pad_y)
+        crop = bgr_region[y1:y2, x1:x2]
+        if crop.size:
+            crops.append(crop)
+    return crops
+
+
+def _preprocess_for_ocr(bgr_or_gray: np.ndarray) -> np.ndarray:
+    if len(bgr_or_gray.shape) == 3:
+        gray = cv2.cvtColor(bgr_or_gray, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = bgr_or_gray
+
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    _, thresh = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return thresh
+
+
+def _gemini_extract_plate_from_image(image: np.ndarray) -> str:
+    if not _gemini_model:
+        return ""
+    try:
+        # Gemini generally performs better with color crops.
+        if len(image.shape) == 2:
+            bgr = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        else:
+            bgr = image
+        ok, buffer = cv2.imencode(".jpg", bgr)
+        if not ok:
+            return ""
+        img_data = buffer.tobytes()
+
+        prompt = (
+            "You are reading a vehicle number plate from a cropped image. "
+            "Extract the exact license plate characters visible on the physical plate. "
+            "Ignore watermarks/stock text (e.g., Storyblocks/Adobe Stock/Gettty/Shutterstock) and any text not printed on the plate. "
+            "Return ONLY valid JSON, no markdown: {\"plate\":\"...\"}. "
+            "Rules: plate must be uppercase A-Z0-9 only, length 5 to 12, no spaces. "
+            "Prefer a full plate; if the plate is not clearly readable, return {\"plate\":\"EMPTY\"}. "
+            "Examples of valid plates: AP39UX7027, 22BH1234AA, GYP274."
+        )
+
+        generation_config = {
+            "temperature": 0.0,
+            "top_p": 0.1,
+            "top_k": 1,
+            "max_output_tokens": 64,
+        }
+
+        response = _gemini_model.generate_content(
+            [
+                prompt,
+                {"mime_type": "image/jpeg", "data": img_data},
+            ],
+            generation_config=generation_config,
+        )
+
+        raw = (getattr(response, "text", "") or "").strip()
+        m = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+        if not m:
+            candidate = raw
+        else:
+            try:
+                candidate = json.loads(m.group(0)).get("plate", "")
+            except Exception:
+                candidate = raw
+
+        candidate = str(candidate or "").strip().upper()
+        if candidate in ("EMPTY", "NONE", "N/A"):
+            return ""
+        return _normalize_plate_candidate(candidate)
+    except Exception as exc:
+        logger.warning(f"Gemini plate OCR failed: {exc}")
+        return ""
+
+
 def is_valid_plate(text: str) -> bool:
     """
     Strict filter for Indian number plates.
-    Patterns:
-    - Standard: MH12AB1234, DL3CAB5678
-    - Old: ABC1234, MHA1234
+    Accepts common formats:
+    - Standard: MH12AB1234, DL3CAB5678, AP39UX7027
     - BH Series: 22BH1234AA
     """
-    if not (4 <= len(text) <= 12):
+    # Reject short strings like "STC7" that are common false positives.
+    # (Non-Indian short watchlist plates are handled separately by is_plausible_plate.)
+    if not (8 <= len(text) <= 12):
         return False
-    
-    # Common non-plate words to exclude (brands, watermarks, country codes)
-    EXCLUDE_WORDS = [
-        "TOYOTA", "HONDA", "SUZUKI", "HYUNDAI", "TATA", "MAHINDRA", "BMW", "AUDI", "FORD", "KIA", "MARUTI",
-        "STORYBLOCKS", "STORY", "BLOCKS", "ADOBE", "STOCK", "GETTY", "SHUTTERSTOCK", "PREMIUM"
-    ]
-    for word in EXCLUDE_WORDS:
+
+    for word in _EXCLUDE_WORDS:
         if word in text:
             return False
 
-    # Regex patterns for Indian plates
+    # Regex patterns for Indian plates (strict)
     patterns = [
-        r'^[A-Z]{2}[0-9]{1,2}[A-Z]{1,3}[0-9]{1,4}$',  # MH12AB1234, DL3CAB5678
-        r'^[A-Z]{3}[0-9]{1,4}$',                       # ABC1234
-        r'^[0-9]{2}BH[0-9]{4}[A-Z]{1,2}$',             # 22BH1234AA
-        r'^[A-Z]{2}[0-9]{1,2}[0-9]{4}$',              # MH121234
+        r'^[A-Z]{2}[0-9]{1,2}[A-Z]{1,3}[0-9]{3,4}$',  # MH12AB1234, DL3CAB5678, AP39UX7027
+        r'^[0-9]{2}BH[0-9]{4}[A-Z]{1,2}$',            # 22BH1234AA
     ]
     
     for p in patterns:
@@ -109,15 +347,6 @@ def is_valid_plate(text: str) -> bool:
             if len(re.findall(r'[0-9]', text)) < 2 and len(text) > 4:
                 return False
             return True
-            
-    # Fallback for slightly noisy OCR but still looking like a plate
-    # Must have State code (2 letters) + some digits + some letters
-    if len(text) >= 7 and re.match(r'^[A-Z]{2}', text):
-        has_letters = len(re.findall(r'[A-Z]', text)) >= 3
-        has_digits = len(re.findall(r'[0-9]', text)) >= 2
-        if has_letters and has_digits:
-            return True
-
     return False
 
 
@@ -159,130 +388,59 @@ def extract_plate_text(roi: np.ndarray) -> tuple[str, float]:
     Returns (plate_text, confidence).
     """
     reader = _get_ocr()
+    if reader == "disabled" and not _gemini_model:
+        return "", 0.0
+
+    # Build candidate regions (plates can appear lower/middle depending on vehicle/camera).
+    h = roi.shape[0]
+    regions: list[np.ndarray] = []
+    lower = roi[int(h * 0.55):, :]
+    mid = roi[int(h * 0.35):int(h * 0.90), :]
+    regions.extend([lower, mid, roi])
+
+    # Collect crops across regions.
+    crops: list[np.ndarray] = []
+    for region in regions:
+        if region is None or region.size == 0:
+            continue
+        if region.shape[0] < 10 or region.shape[1] < 10:
+            continue
+        region_crops = _find_plate_crops(region)
+        if region_crops:
+            crops.extend(region_crops)
+        else:
+            crops.append(region)
+
+    # Keep a bounded number of crops (largest-first happens inside _find_plate_crops).
+    if len(crops) > 8:
+        crops = crops[:8]
+
+    # Gemini-first: returns a plate if it passes normalization/validation.
+    if _gemini_model:
+        max_tries = int(os.getenv("GEMINI_PLATE_CROP_TRIES", "2"))
+        for crop in crops[:max(1, max_tries)]:
+            gem = _gemini_extract_plate_from_image(crop)
+            if gem:
+                return gem, 1.0
+
+    # Local OCR fallback (also strict via is_valid_plate).
     if reader == "disabled":
         return "", 0.0
+    best_plate = ""
+    best_conf = 0.0
+    for crop in crops:
+        pre = _preprocess_for_ocr(crop)
+        candidates = _plate_candidates_from_easyocr(reader, pre)
+        if not candidates:
+            continue
+        plate, conf = max(candidates, key=lambda x: x[1])
+        if conf > best_conf:
+            best_plate, best_conf = plate, conf
 
-    # Focus on lower half of vehicle where plate usually is
-    h = roi.shape[0]
-    plate_region = roi[int(h * 0.55):, :]
+    if best_plate:
+        return best_plate, round(best_conf, 2)
 
-    if plate_region.shape[0] < 10 or plate_region.shape[1] < 10:
-        plate_region = roi
-
-    # Enhance contrast and sharpen for OCR
-    gray = cv2.cvtColor(plate_region, cv2.COLOR_BGR2GRAY)
-    
-    # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    gemini_input = clahe.apply(gray)
-    
-    # Thresholding to isolate black text on light background (or vice versa)
-    # Using Otsu's thresholding to handle varying lighting
-    _, thresh = cv2.threshold(gemini_input, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    
-    # Use the thresholded image for fallback OCR to eliminate light-grey watermarks
-    fallback_input = thresh
-
-    # --- Gemini Strategy (Best Accuracy) ---
-    if _gemini_model:
-        try:
-            logger.info("Attempting high-accuracy OCR via Google Gemini...")
-            # Encode image to JPEG (Gemini works best with clear grayscale/color)
-            ret, buffer = cv2.imencode('.jpg', gemini_input)
-            if ret:
-                img_data = buffer.tobytes()
-                # Extremely strict prompt for Gemini to ignore watermarks
-                prompt = (
-                    "You are a traffic AI. Extract the REAL vehicle license plate number from this image. "
-                    "IMPORTANT: Ignore any watermarks like 'Storyblocks', 'Adobe Stock', or similar grey text in the middle of the frame. "
-                    "Only extract the text from the actual metallic/plastic number plate mounted on the vehicle. "
-                    "Return ONLY the plate number with no spaces. If you cannot see a clear number plate, return 'EMPTY'."
-                )
-                
-                response = _gemini_model.generate_content([
-                    prompt,
-                    {"mime_type": "image/jpeg", "data": img_data}
-                ])
-                
-                gemini_text = response.text.strip().upper()
-                # Remove common prefixes and clean
-                gemini_plate = clean_plate(gemini_text)
-                
-                if is_valid_plate(gemini_plate):
-                    logger.info(f"Gemini extracted valid plate: {gemini_plate}")
-                    return gemini_plate, 1.0
-                else:
-                    logger.debug(f"Gemini output '{gemini_text}' did not pass validation.")
-        except Exception as e:
-            logger.warning(f"Gemini OCR failed: {e}. Falling back...")
-
-    # --- PDF.co Strategy (Legacy High Accuracy) ---
-    try:
-        # Encode ROI to JPEG bytes for API upload
-        ret, buffer = cv2.imencode('.jpg', fallback_input)
-        if ret:
-            logger.info("Attempting high-accuracy OCR via PDF.co...")
-            result = pdf_extractor.extract_text_from_bytes(
-                file_bytes=buffer.tobytes(),
-                filename="plate_crop.jpg",
-                ocr_enabled=True
-            )
-            # PDF.co sometimes returns text with spaces/newlines even with inline:true
-            raw_pdf_text = result.get("text", "").strip()
-            
-            # Split by any whitespace/newline to get individual words/lines
-            potential_plates = []
-            for word in re.split(r'[\s\n\r]+', raw_pdf_text):
-                cleaned = clean_plate(word)
-                if is_valid_plate(cleaned):
-                    potential_plates.append(cleaned)
-            
-            # If no single word matches, try cleaning the whole line (for spaced plates)
-            if not potential_plates:
-                for line in raw_pdf_text.splitlines():
-                    cleaned = clean_plate(line)
-                    if is_valid_plate(cleaned):
-                        potential_plates.append(cleaned)
-
-            if potential_plates:
-                # Pick the longest one that passes (usually the full plate)
-                best_plate = max(potential_plates, key=len)
-                logger.info(f"PDF.co extracted valid plate: {best_plate}")
-                return best_plate, 1.0
-            else:
-                logger.debug(f"PDF.co found text but none matched plate pattern: {raw_pdf_text}")
-    except Exception as e:
-        logger.warning(f"PDF.co OCR failed: {e}. Falling back to EasyOCR.")
-
-    # --- EasyOCR Fallback (Local/Faster) ---
-    try:
-        # Use thresholded image for local OCR too
-        ocr_results = reader.readtext(fallback_input)
-    except Exception as e:
-        logger.debug(f"OCR error: {e}")
-        return "", 0.0
-
-    if not ocr_results:
-        return "", 0.0
-
-    # Filter results by pattern
-    valid_results = []
-    for res in ocr_results:
-        raw_text = res[1]
-        confidence = res[2]
-        plate = clean_plate(raw_text)
-        if is_valid_plate(plate):
-            valid_results.append((plate, confidence))
-        else:
-            if plate:
-                logger.debug(f"Filter REJECTED potential plate: {plate}")
-
-    if not valid_results:
-        return "", 0.0
-
-    # Pick the result with highest confidence among valid patterns
-    best = max(valid_results, key=lambda x: x[1])
-    return (best[0], round(best[1], 2))
+    return "", 0.0
 
 
 def process_frame(frame: np.ndarray) -> tuple[np.ndarray, list[dict]]:

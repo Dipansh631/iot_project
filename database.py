@@ -194,22 +194,48 @@ def init_db():
         db.add_all(vehicles)
         db.commit()
 
-    # Seed default admin user
+    # Seed demo users (idempotent)
     from auth import get_password_hash
-    if not db.query(User).first():
-        admin = User(
-            email="admin@trafficmonitor.gov.in",
-            full_name="System Administrator",
-            hashed_password=get_password_hash("Admin@1234"),
-            role="admin",
+    demo_users = [
+        {
+            "email": "admin@trafficmonitor.gov.in",
+            "full_name": "System Administrator",
+            "password": "Admin@1234",
+            "role": "admin",
+            "police_station_id": None,
+        },
+        {
+            "email": "operator@trafficmonitor.gov.in",
+            "full_name": "Traffic Operator",
+            "password": "Operator@1234",
+            "role": "operator",
+            "police_station_id": None,
+        },
+        {
+            "email": "police@trafficmonitor.gov.in",
+            "full_name": "Duty Officer",
+            "password": "Police@1234",
+            "role": "police",
+            "police_station_id": 1,
+        },
+    ]
+
+    created_any = False
+    for u in demo_users:
+        existing = db.query(User).filter(User.email == u["email"]).first()
+        if existing:
+            continue
+        user = User(
+            email=u["email"],
+            full_name=u["full_name"],
+            hashed_password=get_password_hash(u["password"]),
+            role=u["role"],
+            police_station_id=u["police_station_id"],
         )
-        operator = User(
-            email="operator@trafficmonitor.gov.in",
-            full_name="Traffic Operator",
-            hashed_password=get_password_hash("Operator@1234"),
-            role="operator",
-        )
-        db.add_all([admin, operator])
+        db.add(user)
+        created_any = True
+
+    if created_any:
         db.commit()
 
     db.close()

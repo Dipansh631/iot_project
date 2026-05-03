@@ -236,7 +236,8 @@
     // ── Plate Lookup ──────────────────────────────────────────────────────────
     async function lookupPlate() {
       const plate = document.getElementById('lookup-input').value.trim().toUpperCase();
-      if (!plate) return;
+      const plateKey = plate.replace(/[^A-Z0-9]/g, '');
+      if (!plateKey) return;
 
       const res = document.getElementById('lookup-result');
       res.classList.remove('hidden');
@@ -245,7 +246,7 @@
       try {
         const r = await fetch('/api/suspicious_vehicles');
         const vehicles = await r.json();
-        const match = vehicles.find(v => v.plate === plate);
+        const match = vehicles.find(v => (v.plate || '').replace(/[^A-Z0-9]/g, '') === plateKey);
 
         if (match) {
           res.innerHTML = `
@@ -272,7 +273,7 @@
         const data = await r.json();
         document.getElementById('wl-count').textContent = data.length;
         const mini = document.getElementById('watchlist-mini');
-        mini.innerHTML = data.slice(0, 6).map(v => `
+        mini.innerHTML = data.map(v => `
           <div class="wl-mini-item severity-${v.severity}">
             <span class="plate-badge plate-danger">${v.plate}</span>
             <span class="severity-badge severity-${v.severity}">${v.severity?.toUpperCase()}</span>

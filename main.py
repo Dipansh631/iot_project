@@ -29,7 +29,7 @@ from database import init_db, get_db, SessionLocal
 from database import (User, PoliceStation, SuspiciousVehicle,
                        DetectionLog, AlertNotification, VideoSession)
 from auth import (authenticate_user, create_access_token, get_current_user,
-                  require_user, get_password_hash)
+                  require_user, require_police, get_password_hash)
 import detector
 import pdf_extractor
 
@@ -115,8 +115,13 @@ async def root(request: Request, current_user=Depends(get_current_user)):
 
 
 @app.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request):
-    return tmpl("login.html", request)
+async def login_page(request: Request, next: str = ""):
+    return tmpl("login.html", request, {"next": next})
+
+
+@app.get("/police/login", response_class=HTMLResponse)
+async def police_login_page(request: Request):
+    return tmpl("login.html", request, {"next": "/police/alerts", "portal": "police"})
 
 
 @app.post("/login")
@@ -124,18 +129,53 @@ async def login_submit(
     request: Request,
     email: str = Form(...),
     password: str = Form(...),
+    next: str = Form(default=""),
     db: Session = Depends(get_db),
 ):
     user = authenticate_user(db, email, password)
     if not user:
-        return tmpl("login.html", request, {"error": "Invalid email or password."})
+        return tmpl("login.html", request, {"error": "Invalid email or password.", "next": next})
     token = create_access_token({"sub": user.email})
-    response = RedirectResponse(url="/dashboard", status_code=302)
+
+    redirect_url = "/dashboard"
+    # Safe relative redirect support.
+    if next and isinstance(next, str) and next.startswith("/") and not next.startswith("//"):
+        redirect_url = next
+    elif user.role == "police":
+        redirect_url = "/police/alerts"
+
+    response = RedirectResponse(url=redirect_url, status_code=302)
     response.set_cookie(
         key="access_token", value=token,
         httponly=True, max_age=60 * 60 * 8, samesite="lax"
     )
     return response
+
+
+@app.get("/police", response_class=HTMLResponse)
+async def police_root(request: Request, current_user=Depends(get_current_user)):
+    if not current_user:
+        return RedirectResponse(url="/police/login", status_code=302)
+    if current_user.role != "police":
+        return RedirectResponse(url="/dashboard", status_code=302)
+    return RedirectResponse(url="/police/alerts", status_code=302)
+
+
+@app.get("/police/alerts", response_class=HTMLResponse)
+async def police_alerts_page(
+    request: Request,
+    current_user: User = Depends(require_police),
+    db: Session = Depends(get_db),
+):
+    q = db.query(AlertNotification).order_by(AlertNotification.created_at.desc())
+    # If the police user is tied to a station, show station-specific alerts.
+    if getattr(current_user, "police_station_id", None):
+        q = q.filter(AlertNotification.police_station_id == current_user.police_station_id)
+    alerts = q.limit(200).all()
+    return tmpl("police_alerts.html", request, {
+        "user": current_user,
+        "alerts": alerts,
+    })
 
 
 @app.get("/logout")
@@ -205,11 +245,26 @@ _live_session_id: Optional[int] = None
 
 def _check_suspicious(plate: str, db: Session):
     """Look up a plate in suspicious_vehicles. Returns (bool, vehicle_row|None)."""
+    keys = detector.plate_match_keys(plate)
+    if not keys:
+        return (False, None)
+
+    # Fast path: exact match against normalized keys
     vehicle = (db.query(SuspiciousVehicle)
-               .filter(SuspiciousVehicle.license_plate == plate,
-                       SuspiciousVehicle.is_active == True)
+               .filter(SuspiciousVehicle.is_active == True,
+                       SuspiciousVehicle.license_plate.in_(list(keys)))
                .first())
-    return (True, vehicle) if vehicle else (False, None)
+    if vehicle:
+        return (True, vehicle)
+
+    # Slow path: handle legacy rows stored with spaces/hyphens/etc.
+    rows = db.query(SuspiciousVehicle).filter(SuspiciousVehicle.is_active == True).all()
+    for r in rows:
+        stored_keys = detector.plate_match_keys(r.license_plate)
+        if stored_keys and (keys & stored_keys):
+            return (True, r)
+
+    return (False, None)
 
 
 def _log_detection(plate: str, confidence: float, is_suspicious: bool,
@@ -551,14 +606,22 @@ async def add_suspicious_vehicle(
     db: Session = Depends(get_db),
 ):
     data = await request.json()
-    existing = db.query(SuspiciousVehicle).filter(
-        SuspiciousVehicle.license_plate == data.get("license_plate")
-    ).first()
+    raw_plate = (data.get("license_plate") or "").strip()
+    cleaned_plate = detector.clean_plate(raw_plate)
+    if not cleaned_plate:
+        raise HTTPException(status_code=400, detail="License plate is required")
+    if not (detector.is_valid_plate(cleaned_plate) or detector.is_plausible_plate(cleaned_plate)):
+        raise HTTPException(status_code=400, detail="Invalid license plate format")
+
+    keys = detector.plate_match_keys(cleaned_plate)
+    existing = (db.query(SuspiciousVehicle)
+                .filter(SuspiciousVehicle.license_plate.in_(list(keys)))
+                .first())
     if existing:
         raise HTTPException(status_code=409, detail="Plate already exists")
 
     v = SuspiciousVehicle(
-        license_plate=data.get("license_plate", "").upper(),
+        license_plate=cleaned_plate,
         vehicle_type=data.get("vehicle_type"),
         vehicle_color=data.get("vehicle_color"),
         owner_name=data.get("owner_name"),
@@ -622,7 +685,7 @@ async def favicon():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  PDF TEXT EXTRACTION  (PDF.co API)
+#  PDF TEXT EXTRACTION  (Local + Gemini)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 PDF_UPLOAD_DIR = BASE_DIR / "uploads" / "pdfs"
@@ -637,7 +700,8 @@ async def extract_pdf(
     current_user: User = Depends(require_user),
 ):
     """
-    Upload a PDF and extract its text using PDF.co.
+    Upload a PDF and extract its text.
+    Uses local parsing first, and can fall back to Gemini for OCR on scanned PDFs.
     • pages: comma/range string e.g. "1-3,5" or leave blank for all.
     • ocr:   set true for scanned / image-based PDFs.
     Returns JSON with extracted text and metadata.
@@ -661,11 +725,21 @@ async def extract_pdf(
             ocr_enabled=ocr,
         )
     except RuntimeError as exc:
-        logger.error(f"PDF.co extraction failed: {exc}")
+        logger.error(f"PDF extraction failed: {exc}")
         raise HTTPException(status_code=502, detail=str(exc))
     except TimeoutError as exc:
-        logger.error(f"PDF.co job timed out: {exc}")
+        logger.error(f"PDF extraction timed out: {exc}")
         raise HTTPException(status_code=504, detail=str(exc))
+
+    extracted_name = ""
+    name_confidence = 0.0
+    try:
+        if result.get("text") and (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
+            info = pdf_extractor.extract_name_from_text(result["text"])
+            extracted_name = info.get("full_name", "") or ""
+            name_confidence = float(info.get("confidence", 0.0) or 0.0)
+    except Exception as exc:
+        logger.warning(f"Name extraction failed: {exc}")
 
     return JSONResponse({
         "status":     "success",
@@ -673,7 +747,9 @@ async def extract_pdf(
         "page_count": result["page_count"],
         "char_count": len(result["text"]),
         "text":       result["text"],
-        "body_url":   result["body_url"],
+        "extracted_name": extracted_name,
+        "name_confidence": round(name_confidence, 2),
+        "body_url":   result.get("body_url", ""),
     })
 
 
@@ -683,7 +759,7 @@ async def extract_pdf_from_url(
     current_user: User = Depends(require_user),
 ):
     """
-    Extract text from a publicly-accessible PDF URL via PDF.co.
+    Extract text from a publicly-accessible PDF URL.
     Body JSON: { "url": "https://...", "pages": "1-3", "ocr": true }
     """
     data  = await request.json()
@@ -703,23 +779,26 @@ async def extract_pdf_from_url(
     except TimeoutError as exc:
         raise HTTPException(status_code=504, detail=str(exc))
 
+    extracted_name = ""
+    name_confidence = 0.0
+    try:
+        if result.get("text") and (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
+            info = pdf_extractor.extract_name_from_text(result["text"])
+            extracted_name = info.get("full_name", "") or ""
+            name_confidence = float(info.get("confidence", 0.0) or 0.0)
+    except Exception as exc:
+        logger.warning(f"Name extraction failed: {exc}")
+
     return JSONResponse({
         "status":     "success",
         "source_url": url,
         "page_count": result["page_count"],
         "char_count": len(result["text"]),
         "text":       result["text"],
-        "body_url":   result["body_url"],
+        "extracted_name": extracted_name,
+        "name_confidence": round(name_confidence, 2),
+        "body_url":   result.get("body_url", ""),
     })
-
-
-@app.get("/api/pdf-credits")
-async def pdf_credits(current_user: User = Depends(require_user)):
-    """Return remaining PDF.co API credits."""
-    try:
-        return pdf_extractor.get_api_credits()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
 
 
 @app.get("/watchlist", response_class=HTMLResponse)

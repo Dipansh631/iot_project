@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Login — TrafficMonitor AI</title>
+  <title>{% if portal == 'police' %}Police Login{% else %}Login{% endif %} — TrafficMonitor AI</title>
   <meta name="description" content="Secure login to the Real-Time Traffic Monitoring & Number Plate Detection System">
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
@@ -36,8 +36,8 @@
     <!-- Login Card -->
     <div class="auth-card glass-card">
       <div class="auth-card-header">
-        <h2>Secure Login</h2>
-        <p>Enter your credentials to access the monitoring dashboard</p>
+        <h2>{% if portal == 'police' %}Police Portal Login{% else %}Secure Login{% endif %}</h2>
+        <p>{% if portal == 'police' %}Enter your credentials to view alert logs{% else %}Enter your credentials to access the monitoring dashboard{% endif %}</p>
       </div>
 
       {% if error %}
@@ -48,6 +48,7 @@
       {% endif %}
 
       <form action="/login" method="post" id="login-form" class="auth-form">
+        <input type="hidden" name="next" value="{{ next or '' }}">
         <div class="field-group">
           <label for="email">Email Address</label>
           <div class="input-wrapper">
@@ -81,6 +82,9 @@
           </button>
           <button class="chip" onclick="fillCredentials('operator@trafficmonitor.gov.in','Operator@1234')">
             🎯 Operator
+          </button>
+          <button class="chip" onclick="fillCredentials('police@trafficmonitor.gov.in','Police@1234')">
+            👮 Police
           </button>
         </div>
       </div>
